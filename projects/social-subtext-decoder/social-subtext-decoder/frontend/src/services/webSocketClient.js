@@ -6,7 +6,17 @@ import { io } from 'socket.io-client'
  */
 class ConversationWebSocketClient {
   constructor(apiURL) {
-    this.url = apiURL || (import.meta.env.VITE_API_URL || '/api').replace('/api', '')
+    // Determine WebSocket URL
+    // Default to backend on port 3001 if VITE_API_URL not set
+    this.url = apiURL || (import.meta.env.VITE_API_URL || 'http://localhost:3001')
+    
+    // Remove '/api' suffix if present (from REST API URLs)
+    if (this.url.endsWith('/api')) {
+      this.url = this.url.slice(0, -4)
+    }
+    
+    console.log(`🔌 WebSocket URL: ${this.url}`)
+    
     this.socket = null
     this.sessionId = null
     this.isConnected = false
@@ -25,35 +35,54 @@ class ConversationWebSocketClient {
         this.socket = io(this.url, {
           transports: ['websocket', 'polling'],
           reconnection: true,
-          reconnectionDelay: 1000,
-          reconnectionDelayMax: 5000,
+          reconnectionDelay: 500,
+          reconnectionDelayMax: 3000,
           reconnectionAttempts: 5,
+          connectTimeout: 8000,
           extraHeaders: {
             'x-session-id': sessionId
           }
         })
 
-        // Connection events
+        let connected = false
+
+        // Connection SUCCESS
         this.socket.on('connect', () => {
-          console.log('✅ WebSocket connected:', this.socket.id)
-          this.isConnected = true
-          resolve({ success: true, socketId: this.socket.id })
+          if (!connected) {
+            connected = true
+            console.log('✅ WebSocket connected:', this.socket.id)
+            this.isConnected = true
+            resolve({ success: true, socketId: this.socket.id })
+          }
         })
 
-        this.socket.on('disconnect', () => {
-          console.log('❌ WebSocket disconnected')
+        // Connection FAILED
+        this.socket.on('connect_error', (error) => {
+          if (!connected) {
+            connected = true
+            console.error('❌ Connection error:', error)
+            reject(new Error(`Failed to connect to ${this.url}: ${error.message}`))
+          }
+        })
+
+        // Reconnection attempt failed
+        this.socket.on('error', (error) => {
+          console.error('❌ Socket error:', error)
+          if (this.callbacks.onError) {
+            this.callbacks.onError(error)
+          }
+        })
+
+        // Disconnection
+        this.socket.on('disconnect', (reason) => {
+          console.log('❌ WebSocket disconnected:', reason)
           this.isConnected = false
           if (this.callbacks.onDisconnect) {
             this.callbacks.onDisconnect()
           }
         })
 
-        this.socket.on('connect_error', (error) => {
-          console.error('❌ Connection error:', error)
-          reject(error)
-        })
-
-        // Conversation events
+        // Conversation ready
         this.socket.on('conversation:ready', (data) => {
           console.log('🎥 Conversation ready:', data)
           if (this.callbacks.onReady) {
@@ -61,25 +90,20 @@ class ConversationWebSocketClient {
           }
         })
 
+        // Frame processed
         this.socket.on('frame:processed', (result) => {
           this.frameCount++
-          console.log(`📊 Frame ${this.frameCount} processed:`, result)
+          console.log(`📊 Frame ${this.frameCount} processed`)
           if (this.callbacks.onFrameProcessed) {
             this.callbacks.onFrameProcessed(result)
           }
         })
 
+        // Conversation summary
         this.socket.on('conversation:summary', (summary) => {
           console.log('📈 Conversation summary:', summary)
           if (this.callbacks.onSummary) {
             this.callbacks.onSummary(summary)
-          }
-        })
-
-        this.socket.on('error', (error) => {
-          console.error('❌ Socket error:', error)
-          if (this.callbacks.onError) {
-            this.callbacks.onError(error)
           }
         })
 

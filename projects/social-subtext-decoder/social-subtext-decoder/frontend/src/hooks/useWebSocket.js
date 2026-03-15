@@ -22,14 +22,19 @@ export function useWebSocket() {
     try {
       setStatus('connecting')
       setError(null)
+      console.log('🔌 Starting WebSocket connection with sessionId:', sessionId)
       
       const client = getWebSocketClient()
       clientRef.current = client
       
       await client.connect(sessionId)
       
+      console.log('✅ WebSocket connection successful')
+      setStatus('connected')
+      
       // Register callbacks
       client.on('onReady', () => {
+        console.log('🎬 Server ready for streaming')
         setStatus('connected')
       })
       
@@ -42,18 +47,21 @@ export function useWebSocket() {
       })
       
       client.on('onError', (err) => {
+        console.error('🔌 WebSocket callback error:', err)
         setError(err.message || 'WebSocket error')
         setStatus('error')
       })
       
       client.on('onDisconnect', () => {
+        console.log('❌ WebSocket disconnected')
         setStatus('disconnected')
       })
       
       return true
     } catch (err) {
-      console.error('Connection failed:', err)
-      setError(err.message)
+      console.error('❌ Connection failed:', err)
+      const errorMsg = err.message || 'Failed to connect to backend'
+      setError(errorMsg)
       setStatus('error')
       return false
     }

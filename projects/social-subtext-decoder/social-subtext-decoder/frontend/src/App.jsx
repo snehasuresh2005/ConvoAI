@@ -3,6 +3,7 @@ import Layout from '@components/Layout'
 import DecoderPage from '@pages/DecoderPage'
 import HistoryPage from '@pages/HistoryPage'
 import LiveConversationPage from '@pages/LiveConversationPage'
+import SpeechPracticePage from '@pages/SpeechPracticePage'
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
           <Route index element={<DecoderPage />} />
           <Route path="live" element={<LiveConversationPage />} />
           <Route path="history" element={<HistoryPage />} />
+          <Route path="practice" element={<SpeechPracticePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

@@ -9,6 +9,7 @@ import { Server } from 'socket.io'
 
 import decodeRoutes from './routes/decode.js'
 import historyRoutes from './routes/history.js'
+import practiceRoutes from './routes/practice.js'
 
 dotenv.config()
 
@@ -78,8 +79,9 @@ app.get('/health', (req, res) => {
 })
 
 // ─── API Routes ────────────────────────────────────────────────
-app.use('/api/decode',  decodeLimiter, decodeRoutes)
-app.use('/api/history', historyRoutes)
+app.use('/api/decode',    decodeLimiter, decodeRoutes)
+app.use('/api/history',   historyRoutes)
+app.use('/api/practice',  practiceRoutes)
 
 // ─── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
@@ -121,7 +123,12 @@ const io = new Server(httpServer, {
 io.on('connection', (socket) => {
   const sessionId = socket.handshake.headers['x-session-id'] || socket.id
   
-  console.log(`✅ Client connected: ${socket.id} (session: ${sessionId})`)
+  console.log(`✅ Client connected: ${socket.id}`)
+  console.log(`   Session: ${sessionId}`)
+  console.log(`   Remote IP: ${socket.handshake.address}`)
+  
+  // Emit ready signal
+  socket.emit('connection:ready', { socketId: socket.id, status: 'connected' })
   
   // ── Conversation mode events ──
   socket.on('conversation:start', (data, callback) => {
@@ -131,12 +138,13 @@ io.on('connection', (socket) => {
   })
   
   socket.on('frame:send', (data, callback) => {
-    // data = { videoFrame: base64, audioChunk: PCMdata, timestamp }
+    // data = { frame: base64, chunks: audioData[], timestamp }
     console.log(`📥 Frame received:`, {
       sessionId,
-      hasVideo: !!data.videoFrame,
-      videoSize: data.videoFrame?.length || 0,
-      hasAudio: !!data.audioChunk,
+      hasVideo: !!data.frame,
+      videoSize: data.frame?.length || 0,
+      hasAudio: Array.isArray(data.chunks),
+      audioChunks: data.chunks?.length || 0,
       timestamp: data.timestamp
     })
     

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Camera, Mic, Square, AlertCircle, Zap } from 'lucide-react'
 import { useMediaCapture } from '@hooks/useMediaCapture'
 import { useWebSocket } from '@hooks/useWebSocket'
+import { processFrame } from '@services/frameProcessorService'
 import ErrorBanner from '@components/ErrorBanner'
 import clsx from 'clsx'
 
@@ -17,6 +18,7 @@ export default function LiveConversationPage() {
   const [isStarted, setIsStarted] = useState(false)
   const [currentTranscript, setCurrentTranscript] = useState('')
   const [interimTranscript, setInterimTranscript] = useState('')
+  const [emotionData, setEmotionData] = useState(null)
   const frameBufferRef = useRef({ video: null, audio: [] })
   
   // Connect WebSocket on mount
@@ -47,19 +49,54 @@ export default function LiveConversationPage() {
   /**
    * Handle frame/audio data from media capture
    */
-  const handleFrameCapture = (data) => {
+  const handleFrameCapture = async (data) => {
     if (data.type === 'video') {
       // Accumulate video frame
       frameBufferRef.current.video = data.frame
       
-      // Check if we have both video and audio accumulated, then send
+      // Check if we have both video and audio accumulated, then process
       if (frameBufferRef.current.audio.length > 0) {
-        sendFrame({
-          frame: frameBufferRef.current.video,
-          chunks: frameBufferRef.current.audio,
-          timestamp: data.timestamp
-        })
-        frameBufferRef.current.audio = []
+        try {
+          // Process frame with emotion detection
+          const emotionResult = await processFrame(
+            frameBufferRef.current.video,
+            frameBufferRef.current.audio
+          )
+
+          if (emotionResult?.success) {
+            // Update emotion display in real-time
+            setEmotionData(emotionResult)
+
+            // Send to backend with emotion analysis
+            sendFrame({
+              frame: frameBufferRef.current.video,
+              chunks: frameBufferRef.current.audio,
+              timestamp: data.timestamp,
+              emotion: emotionResult.emotion,
+              interpretation: emotionResult.interpretation,
+              suggestedResponses: emotionResult.suggestedResponses
+            })
+          } else {
+            // Fallback if emotion detection fails
+            console.warn('⚠️ Emotion detection failed, sending frame without emotion')
+            sendFrame({
+              frame: frameBufferRef.current.video,
+              chunks: frameBufferRef.current.audio,
+              timestamp: data.timestamp
+            })
+          }
+
+          frameBufferRef.current.audio = []
+        } catch (err) {
+          console.error('❌ Frame processing error:', err)
+          // Still send frame even if emotion detection fails
+          sendFrame({
+            frame: frameBufferRef.current.video,
+            chunks: frameBufferRef.current.audio,
+            timestamp: data.timestamp
+          })
+          frameBufferRef.current.audio = []
+        }
       }
     } else if (data.type === 'audio') {
       // Accumulate audio chunks
@@ -231,20 +268,32 @@ export default function LiveConversationPage() {
             {/* Emotion meter */}
             <div className="bg-soft-bg rounded-xl p-4 space-y-2">
               <p className="text-xs font-semibold text-soft-muted uppercase tracking-wider">Emotion</p>
-              {lastResult?.emotion ? (
+              {emotionData?.emotion || lastResult?.emotion?.label ? (
                 <div className="space-y-1">
-                  <p className="font-semibold text-gray-900">
-                    {lastResult.emotion.label}
+                  <p className="font-semibold text-gray-900 flex items-center gap-2">
+                    {emotionData?.emotion || lastResult?.emotion?.label}
+                    {emotionData?.detected && (
+                      <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                        Live
+                      </span>
+                    )}
                   </p>
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
                       className="bg-primary-500 h-2 rounded-full transition-all"
-                      style={{ width: `${lastResult.emotion.confidence * 100}%` }}
+                      style={{
+                        width: `${(emotionData?.confidence || lastResult?.emotion?.confidence || 0) * 100}%`
+                      }}
                     />
                   </div>
                   <p className="text-xs text-soft-muted">
-                    Confidence: {Math.round(lastResult.emotion.confidence * 100)}%
+                    Confidence: {Math.round((emotionData?.confidence || lastResult?.emotion?.confidence || 0) * 100)}%
                   </p>
+                  {emotionData?.latency && (
+                    <p className="text-xs text-soft-muted">
+                      Processing: {emotionData.latency.toFixed(0)}ms
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-soft-muted">[Awaiting analysis]</p>
@@ -252,7 +301,7 @@ export default function LiveConversationPage() {
             </div>
             
             {/* Tone explanation */}
-            {lastResult?.interpretation && (
+            {(emotionData?.interpretation || lastResult?.interpretation) && (
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -262,7 +311,7 @@ export default function LiveConversationPage() {
                   💡 Interpretation
                 </p>
                 <p className="text-sm text-gray-900">
-                  {lastResult.interpretation}
+                  {emotionData?.interpretation || lastResult?.interpretation}
                 </p>
               </motion.div>
             )}
@@ -303,7 +352,7 @@ export default function LiveConversationPage() {
       </div>
       
       {/* Suggested responses */}
-      {lastResult?.suggestedResponses && (
+      {(emotionData?.suggestedResponses || lastResult?.suggestedResponses) && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -313,16 +362,23 @@ export default function LiveConversationPage() {
             Suggested Responses
           </p>
           <div className="space-y-2">
-            {lastResult.suggestedResponses.map((response, i) => (
-              <div key={i} className="bg-soft-bg rounded-lg p-3 border border-soft-border">
-                <p className="text-sm font-medium text-gray-900">
-                  "{response.text}"
-                </p>
-                <p className="text-xs text-soft-muted mt-1">
-                  {response.context}
-                </p>
-              </div>
-            ))}
+            {(emotionData?.suggestedResponses || lastResult?.suggestedResponses || []).map((response, i) => {
+              const responseText = typeof response === 'string' ? response : response.text
+              const context = typeof response === 'string' ? null : response.context
+              
+              return (
+                <div key={i} className="bg-soft-bg rounded-lg p-3 border border-soft-border hover:border-primary-200 cursor-pointer transition-colors">
+                  <p className="text-sm font-medium text-gray-900">
+                    "{responseText}"
+                  </p>
+                  {context && (
+                    <p className="text-xs text-soft-muted mt-1">
+                      {context}
+                    </p>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </motion.div>
       )}

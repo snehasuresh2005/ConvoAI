@@ -65,64 +65,86 @@ export function useMediaCapture() {
       // Setup video element
       if (videoRef.current) {
         videoRef.current.srcObject = stream
+        
+        // Wait for video to be ready before starting capture
+        const onCanPlay = async () => {
+          console.log('✅ Video stream ready, starting capture')
+          videoRef.current?.removeEventListener('canplay', onCanPlay)
+          
+          // Setup audio processing
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+          audioContextRef.current = audioContext
+          
+          const source = audioContext.createMediaStreamSource(stream)
+          const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1)
+          scriptProcessorRef.current = scriptProcessor
+          
+          // Collect audio chunks
+          const audioChunks = []
+          scriptProcessor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0)
+            audioChunks.push(new Float32Array(inputData))
+            
+            // Send audio batch every ~1 second
+            if (audioChunks.length >= audioContext.sampleRate / 4096) {
+              if (frameCallbackRef.current) {
+                frameCallbackRef.current({
+                  type: 'audio',
+                  chunks: audioChunks.splice(0) // Copy and clear
+                })
+              }
+            }
+          }
+          
+          source.connect(scriptProcessor)
+          scriptProcessor.connect(audioContext.destination)
+          
+          setIsCapturing(true)
+          
+          // Start frame extraction loop (2 FPS)
+          const frameInterval = setInterval(() => {
+            if (videoRef.current && !videoRef.current.paused && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+              const frame = captureFrame()
+              if (frame && frameCallbackRef.current) {
+                frameCallbackRef.current({
+                  type: 'video',
+                  frame,
+                  timestamp: new Date().toISOString()
+                })
+              }
+            }
+          }, 500) // 500ms = 2 FPS
+          
+          // Store interval ID for cleanup
+          if (videoRef.current) {
+            videoRef.current.frameInterval = frameInterval
+          }
+        }
+        
+        videoRef.current.addEventListener('canplay', onCanPlay)
+        
         // Ensure video plays
         videoRef.current.play().catch(err => {
           console.warn('Video autoplay blocked:', err)
         })
       }
       
-      // Setup audio processing
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      audioContextRef.current = audioContext
-      
-      const source = audioContext.createMediaStreamSource(stream)
-      const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1)
-      scriptProcessorRef.current = scriptProcessor
-      
-      // Collect audio chunks
-      const audioChunks = []
-      scriptProcessor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0)
-        audioChunks.push(new Float32Array(inputData))
-        
-        // Send audio batch every ~1 second
-        if (audioChunks.length >= audioContext.sampleRate / 4096) {
-          if (frameCallbackRef.current) {
-            frameCallbackRef.current({
-              type: 'audio',
-              chunks: audioChunks.splice(0) // Copy and clear
-            })
-          }
-        }
-      }
-      
-      source.connect(scriptProcessor)
-      scriptProcessor.connect(audioContext.destination)
-      
-      setIsCapturing(true)
-      
-      // Start frame extraction loop (2 FPS)
-      const frameInterval = setInterval(() => {
-        if (!videoRef.current?.paused) {
-          const frame = captureFrame()
-          if (frame && frameCallbackRef.current) {
-            frameCallbackRef.current({
-              type: 'video',
-              frame,
-              timestamp: new Date().toISOString()
-            })
-          }
-        }
-      }, 500) // 500ms = 2 FPS
-      
-      // Store interval ID for cleanup
-      if (videoRef.current) {
-        videoRef.current.frameInterval = frameInterval
-      }
-      
     } catch (err) {
       console.error('❌ Media capture error:', err)
-      setError(err.message || 'Failed to access camera/microphone')
+      
+      let errorMessage = 'Failed to access camera/microphone'
+      
+      if (err.name === 'NotAllowedError') {
+        errorMessage = 'Camera/microphone permission denied. Please check browser settings and try again.'
+      } else if (err.name === 'NotFoundError') {
+        errorMessage = 'No camera/microphone found. Please check your device.'
+      } else if (err.name === 'NotReadableError') {
+        errorMessage = 'Camera/microphone is in use by another app. Please close it and try again.'
+      } else if (err.message) {
+        errorMessage = err.message
+      }
+      
+      setError(errorMessage)
       setIsCapturing(false)
     }
   }, [captureFrame])
